@@ -180,3 +180,7 @@ label.f input,label.f select{width:100%}
 .pc-dl.late{color:var(--bad)} .pc-dl.soon{color:var(--warn)}
 .pcard.new{border-style:dashed;align-items:center;justify-content:center;color:var(--petrol);font-weight:600;font-size:1.05rem}
 .pcard.new .plus{font-size:2rem;line-height:1}
+
+/* ---------- Leer carpeta ---------- */
+#dlgSync{width:min(780px,calc(100vw - 24px))}
+#dlgSync select{min-width:170px;width:100%}

@@ -177,7 +177,7 @@ function render(){
 
   const band = volver + `<section class="band">
     <div class="band-head">
-      <div><h1 class="pname">${esc(p.nombre)}</h1><div class="pmeta">${esc(p.mandante||'Sin mandante')} · ${p.docs.length} documentos por trabajador${folder}</div></div>
+      <div><h1 class="pname">${esc(p.nombre)}</h1><div class="pmeta">${esc(p.mandante||'Sin mandante')} · ${p.docs.length} documentos por trabajador${folder}${p.ultimaLectura?` · Carpeta leída el ${esc(fmtDate(p.ultimaLectura.slice(0,10)))}`:''}</div></div>
       ${dl}
     </div>
     ${ws.length ? `<div class="ready"><span class="n">${nV}</span><span class="of">de ${ws.length} trabajadores listos para acreditar</span></div>${strip}
@@ -202,6 +202,7 @@ function render(){
     <div class="row">
       <input type="search" id="q" placeholder="Buscar por nombre o RUT" value="${esc(S.q)}" aria-label="Buscar trabajador">
       <button class="btn" type="button" data-act="pend">Lista de pendientes</button>
+      <button class="btn primary" type="button" data-act="sync">Leer carpeta</button>
       <button class="btn" type="button" data-act="import">Agregar trabajadores</button>
       <button class="btn" type="button" data-act="export">Exportar a Excel</button>
     </div></div>`;
@@ -217,7 +218,7 @@ function render(){
     const cells = p.docs.map(d=>{
       const c = cellOf(w,d.key); const st = ESTADOS.find(e=>e.k===c.estado)||ESTADOS[0];
       return `<td><button type="button" class="cell s-${st.k}" data-act="cell" data-w="${w.id}" data-k="${esc(d.key)}" title="${esc(c.nota||st.t)}">
-        <span class="ico" aria-hidden="true"></span><span>${st.t}</span>${isUrl(c.link)?'<span class="clip" aria-label="con archivo">📎</span>':''}</button></td>`;
+        <span class="ico" aria-hidden="true"></span><span>${st.t}</span>${(isUrl(c.link)||c.archivo)?'<span class="clip" aria-label="con archivo">📎</span>':''}</button></td>`;
     }).join('');
     return `<tr><td class="who"><button type="button" data-act="worker" data-w="${w.id}"><span class="nm">${esc(w.nombre)}</span>
       <span class="sub">${esc(w.rut)}${badRut?' <span class="warnrut">(RUT no válido)</span>':''}${w.cargo?' · '+esc(w.cargo):''}</span></button></td>
@@ -450,6 +451,169 @@ function openImport(){
 }
 
 /* =========================================================
+   Leer carpeta sincronizada (OneDrive, SharePoint, Drive…)
+   La app solo lee los NOMBRES de los archivos: no los abre ni los sube.
+   Cada subcarpeta corresponde a un documento, y cada archivo se
+   reconoce por el RUT que tiene en su nombre (ej: 15433012-7.pdf).
+   ========================================================= */
+
+const claveRut = s => String(s||'').replace(/[^0-9kK]/g,'').toUpperCase();
+
+/* Busca un RUT dentro del nombre de un archivo: "15.433.012-7 contrato.pdf" -> "154330127" */
+function rutDesdeNombre(nombre){
+  const m = String(nombre).match(/(\d{1,2}(?:\.?\d{3}){2})\s*-?\s*([\dkK])(?!\d)/);
+  return m ? m[1].replace(/\./g,'') + m[2].toUpperCase() : null;
+}
+
+/* Agrupa los archivos elegidos por subcarpeta: { "1. Contratos": Map(rut -> ruta) } */
+function agruparPorCarpeta(files){
+  const grupos = {}; let raiz = '';
+  for(const f of files){
+    const partes = (f.webkitRelativePath || f.name).split('/');
+    raiz = partes[0];
+    if(partes.length < 3) continue;             // archivos sueltos en la carpeta principal: se ignoran
+    const sub = partes[1], nombre = partes[partes.length-1];
+    if(nombre.startsWith('.') || nombre.startsWith('~$')) continue; // archivos ocultos o temporales
+    const rut = rutDesdeNombre(nombre);
+    grupos[sub] = grupos[sub] || {total:0, porRut:new Map(), sinRut:[]};
+    grupos[sub].total++;
+    if(rut){ if(!grupos[sub].porRut.has(rut)) grupos[sub].porRut.set(rut, partes.slice(1).join('/')); }
+    else grupos[sub].sinRut.push(nombre);
+  }
+  return {raiz, grupos};
+}
+
+/* Propone qué subcarpeta corresponde a cada documento: primero por número ("1. ..."), luego por palabras */
+function proponerMapa(docs, carpetas, guardado){
+  const mapa = {}; const usadas = new Set();
+  docs.forEach(d => { const g = guardado && guardado[d.key]; if(g && carpetas.includes(g)){ mapa[d.key]=g; usadas.add(g); } });
+  docs.forEach((d,i) => {
+    if(mapa[d.key]) return;
+    const porNumero = carpetas.find(c => !usadas.has(c) && new RegExp('^0*'+(i+1)+'\\D').test(c));
+    if(porNumero){ mapa[d.key]=porNumero; usadas.add(porNumero); }
+  });
+  docs.forEach(d => {
+    if(mapa[d.key]) return;
+    const palabras = normTxt(d.nombre).split(' ').filter(w => w.length >= 3 && !['del','los','las','para'].includes(w));
+    let mejor = null, puntos = 0;
+    carpetas.filter(c => !usadas.has(c)).forEach(c => {
+      const n = normTxt(c); const pts = palabras.filter(w => n.includes(w.slice(0,5))).length;
+      if(pts > puntos){ puntos = pts; mejor = c; }
+    });
+    if(mejor){ mapa[d.key]=mejor; usadas.add(mejor); }
+  });
+  return mapa;
+}
+
+/* Calcula qué cambiaría, sin guardar nada todavía */
+function calcularCambios(p, ws, grupos, mapa){
+  const cambios = []; let yaEstaban = 0;
+  const rutsProyecto = new Set(ws.map(w => claveRut(w.rut)));
+  for(const w of ws){
+    const k = claveRut(w.rut);
+    for(const d of p.docs){
+      const carpeta = mapa[d.key]; if(!carpeta || !grupos[carpeta]) continue;
+      const ruta = grupos[carpeta].porRut.get(k); if(!ruta) continue;
+      const c = cellOf(w, d.key);
+      if(c.estado === 'pendiente') cambios.push({w, d, c, ruta, marcar:true});
+      else if(c.archivo !== ruta) cambios.push({w, d, c, ruta, marcar:false});
+      else yaEstaban++;
+    }
+  }
+  // Archivos cuyo RUT no está en el proyecto (quizás falta cargar a ese trabajador)
+  const sinTrabajador = new Set();
+  Object.values(mapa).forEach(cp => grupos[cp] && grupos[cp].porRut.forEach((ruta, rut) => { if(!rutsProyecto.has(rut)) sinTrabajador.add(rut); }));
+  return {cambios, yaEstaban, sinTrabajador:[...sinTrabajador]};
+}
+
+function openSync(){
+  const p = curProject(); const f = $('#formSync');
+  let lectura = null, mapa = {};
+  f.innerHTML = `<h3>Leer carpeta de documentos</h3><div class="sub">${esc(p.nombre)}</div>
+    <div class="drop" id="syncDrop">
+      <p>Elige la carpeta que contiene <b>una subcarpeta por documento</b> (por ejemplo, <i>1. Contratos</i>, <i>2. Anexos</i>…).</p>
+      <label class="btn primary">Elegir carpeta<input type="file" id="dirIn" webkitdirectory multiple class="sr"></label>
+      <p class="hint">Los archivos <b>no se suben</b>: la app solo lee sus nombres para buscar el RUT. Si el navegador pregunta si quieres "subir" archivos, puedes aceptar tranquilo.</p>
+    </div>
+    <div id="syncBody"></div>
+    <div class="err" id="sErr"></div>
+    <div class="acts"><button type="button" class="btn" data-close>Cerrar</button><button type="submit" class="btn primary" id="sGo" disabled>Aplicar</button></div>`;
+
+  const dibujar = () => {
+    const carpetas = Object.keys(lectura.grupos).sort((a,b)=>a.localeCompare(b,'es',{numeric:true}));
+    const ws = projWorkers(p.id);
+    const r = calcularCambios(p, ws, lectura.grupos, mapa);
+    const nuevos = r.cambios.filter(x=>x.marcar).length;
+    const filasMapa = p.docs.map(d => {
+      const sel = mapa[d.key] || '';
+      const g = lectura.grupos[sel];
+      const coinc = g ? ws.filter(w => g.porRut.has(claveRut(w.rut))).length : 0;
+      return `<tr><td>${esc(d.nombre)}</td>
+        <td><select data-doc="${esc(d.key)}" aria-label="Carpeta para ${esc(d.nombre)}"><option value="">— Ninguna —</option>${
+          carpetas.map(c=>`<option value="${esc(c)}" ${c===sel?'selected':''}>${esc(c)}</option>`).join('')}</select></td>
+        <td>${g ? `${g.total} archivo${g.total!==1?'s':''} · <b>${coinc}</b> de ${ws.length} trabajadores` : '<span class="hint">Sin carpeta</span>'}</td></tr>`;
+    }).join('');
+    const detalle = r.cambios.filter(x=>x.marcar).slice(0,10).map(x=>`<li>${esc(x.w.nombre)}: ${esc(x.d.nombre)}</li>`).join('');
+    const sinRut = Object.values(lectura.grupos).reduce((n,g)=>n+g.sinRut.length,0);
+    $('#syncBody').innerHTML = `
+      <p class="sum">Carpeta leída: <b>${esc(lectura.raiz)}</b> · ${carpetas.length} subcarpetas</p>
+      <div class="prev"><table><thead><tr><th>Documento</th><th>Subcarpeta</th><th>Encontrado</th></tr></thead><tbody>${filasMapa}</tbody></table></div>
+      <p class="sum">${nuevos ? `Se marcarán <b>${nuevos}</b> documentos como <b>Recibido</b>.` : 'No hay documentos nuevos para marcar.'}
+        ${r.yaEstaban?` ${r.yaEstaban} ya estaban registrados.`:''}</p>
+      ${detalle?`<ul class="hint" style="margin:0;padding-left:18px">${detalle}${nuevos>10?`<li>…y ${nuevos-10} más</li>`:''}</ul>`:''}
+      ${r.sinTrabajador.length?`<p class="hint">⚠️ Hay ${r.sinTrabajador.length} RUT con archivos que no están cargados en este proyecto: ${r.sinTrabajador.slice(0,5).map(x=>esc(normRut(x))).join(', ')}${r.sinTrabajador.length>5?'…':''}</p>`:''}
+      ${sinRut?`<p class="hint">⚠️ ${sinRut} archivo${sinRut!==1?'s':''} no tienen un RUT reconocible en el nombre y se ignoraron.</p>`:''}
+      <p class="hint">Los documentos aprobados u observados no cambian de estado. La revisión sigue siendo tuya.</p>`;
+    $('#syncBody').querySelectorAll('select[data-doc]').forEach(s => s.onchange = e => { mapa[e.target.dataset.doc] = e.target.value; dibujar(); });
+    $('#sGo').disabled = !r.cambios.length && !Object.keys(mapa).length;
+    $('#sGo').textContent = nuevos ? `Marcar ${nuevos} como recibidos` : 'Guardar';
+    lectura.resultado = r;
+  };
+
+  $('#dirIn').onchange = e => {
+    $('#sErr').textContent = '';
+    const files = [...e.target.files];
+    if(!files.length) return;
+    const lec = agruparPorCarpeta(files);
+    if(!Object.keys(lec.grupos).length){
+      $('#syncBody').innerHTML = '';
+      $('#sErr').textContent = 'Esa carpeta no tiene subcarpetas con archivos. Elige la carpeta que contiene las subcarpetas de cada documento.';
+      return;
+    }
+    lectura = lec;
+    mapa = proponerMapa(p.docs, Object.keys(lec.grupos), p.mapaCarpetas);
+    dibujar();
+  };
+
+  f.onsubmit = async e => {
+    e.preventDefault();
+    if(!lectura) return;
+    const btn = $('#sGo'); btn.disabled = true; btn.textContent = 'Guardando…';
+    try{
+      // Agrupa los cambios por trabajador y guarda en lotes
+      const porTrab = new Map();
+      for(const x of lectura.resultado.cambios){
+        const campos = porTrab.get(x.w.id) || {};
+        campos[`docs.${x.d.key}`] = x.marcar
+          ? {estado:'recibido', nota:x.c.nota||'', link:x.c.link||'', archivo:x.ruta, fecha:today(), por:(S.user?.email||'')+' (lectura de carpeta)'}
+          : {...x.c, archivo:x.ruta};
+        porTrab.set(x.w.id, campos);
+      }
+      const ids = [...porTrab.keys()];
+      for(let i=0; i<ids.length; i+=400){
+        const b = writeBatch(db); const st = stamp();
+        ids.slice(i,i+400).forEach(id => b.update(doc(db,'trabajadores',id), {...porTrab.get(id), ...st}));
+        await b.commit();
+      }
+      await updateDoc(doc(db,'proyectos',p.id), {mapaCarpetas: mapa, ultimaLectura: new Date().toISOString(), ...stamp()});
+      const n = lectura.resultado.cambios.filter(x=>x.marcar).length;
+      $('#dlgSync').close(); toast(n ? `${n} documentos marcados como recibidos` : 'Lectura guardada');
+    }catch(err){ dbErr(err); btn.disabled=false; btn.textContent='Aplicar'; }
+  };
+  $('#dlgSync').showModal();
+}
+
+/* =========================================================
    Diálogo: casilla (estado de un documento)
    ========================================================= */
 function openCell(wid, key){
@@ -461,6 +625,7 @@ function openCell(wid, key){
     <label class="f">Observación<textarea name="nota" rows="2" placeholder="Ej: falta firma en la página 2">${esc(c.nota||'')}</textarea></label>
     <label class="f">Link del escaneo (SharePoint, Drive u otro)<input type="text" name="link" inputmode="url" value="${esc(c.link||'')}" placeholder="https://…"></label>
     ${isUrl(c.link)?`<div class="attach"><a href="${esc(c.link)}" target="_blank" rel="noopener">Abrir escaneo</a></div>`:''}
+    ${c.archivo?`<div class="hint">📎 Archivo detectado en la carpeta: <b>${esc(c.archivo)}</b></div>`:''}
     ${c.fecha?`<div class="hint">Último cambio: ${esc(fmtDate(c.fecha))}${c.por?` por ${esc(c.por)}`:''}</div>`:''}
     <div class="err" id="cErr"></div>
     <div class="acts"><button type="button" class="btn" data-close>Cancelar</button><button type="submit" class="btn primary" id="cGo">Guardar</button></div>`;
@@ -470,7 +635,7 @@ function openCell(wid, key){
     if(link && !isUrl(link)){ $('#cErr').textContent='El link debe comenzar con https://'; return; }
     if(link && estado==='pendiente') estado='recibido';
     $('#cGo').disabled=true;
-    try{ await patchCell(wid,key,{estado, nota, link, fecha:today()}); $('#dlgCell').close(); toast('Guardado'); }
+    try{ await patchCell(wid,key,{estado, nota, link, archivo:c.archivo||'', fecha:today()}); $('#dlgCell').close(); toast('Guardado'); }
     catch(err){ $('#cGo').disabled=false; dbErr(err); }
   };
   $('#dlgCell').showModal();
@@ -554,6 +719,7 @@ document.addEventListener('click', e => {
   else if(a==='home'){ S.view='inicio'; S.filter='todos'; S.q=''; render(); window.scrollTo(0,0); }
   else if(a==='open'){ S.current=t.dataset.p; S.view='proyecto'; S.filter='todos'; S.q=''; lsSet('cd-current',S.current); render(); window.scrollTo(0,0); }
   else if(a==='pend') openPend();
+  else if(a==='sync') openSync();
   else if(a==='export') exportCsv();
   else if(a==='logout') signOut(auth);
 });
