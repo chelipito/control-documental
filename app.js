@@ -150,8 +150,8 @@ function render(){
 
   if(!ws.length){
     app.innerHTML = band + `<section class="empty"><h2>Carga la nómina</h2>
-      <p>Pega las columnas RUT, nombre y cargo directamente desde Excel. Cada trabajador queda con sus ${p.docs.length} documentos en pendiente.</p>
-      <button class="btn primary" type="button" data-act="import">Agregar trabajadores</button></section>`;
+      <p>Sube un Excel con las columnas RUT, Nombre y Cargo. Cada trabajador queda con sus ${p.docs.length} documentos en pendiente.</p>
+      <button class="btn primary" type="button" data-act="import">Cargar trabajadores</button></section>`;
     return;
   }
 
@@ -255,50 +255,165 @@ function openProject(edit){
 }
 
 /* =========================================================
-   Diálogo: importar nómina
+   Carga masiva de trabajadores (Excel, CSV o pegar)
    ========================================================= */
-function parseNomina(text, existentes){
-  const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
-  const out=[]; let rep=0;
-  const seen = new Set(existentes.map(w=>w.rut.replace(/[^0-9K]/gi,'').toUpperCase()));
-  lines.forEach((l,i)=>{
-    const sep = l.includes('\t')?'\t':l.includes(';')?';':',';
-    const c = l.split(sep).map(x=>x.trim());
-    if(i===0 && /rut/i.test(c[0])) return;
-    if(!c[0] || !c[1]) return;
-    const key = c[0].replace(/[^0-9K]/gi,'').toUpperCase();
-    if(seen.has(key)){ rep++; return; }
-    seen.add(key);
-    out.push({rut:normRut(c[0]), nombre:c[1], cargo:c[2]||'', contacto:c[3]||''});
+
+/* El lector de Excel (SheetJS) se descarga solo cuando se usa */
+function cargarLectorExcel(){
+  if(window.XLSX) return Promise.resolve(window.XLSX);
+  return new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    s.onload = () => res(window.XLSX);
+    s.onerror = () => rej(new Error('No se pudo cargar el lector de Excel'));
+    document.head.appendChild(s);
   });
-  return {out, rep};
 }
+
+/* Quita mayúsculas y tildes para comparar encabezados: "Teléfono" -> "telefono" */
+const normTxt = s => String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9 ]/g,'').replace(/\s+/g,' ').trim();
+
+/* Busca las columnas por su encabezado, sin importar el orden en el Excel */
+function mapearColumnas(encabezado){
+  const h = encabezado.map(normTxt);
+  const buscar = prueba => h.findIndex(prueba);
+  const iRut  = buscar(x => x.includes('rut') || x === 'run');
+  const iNom  = buscar(x => (x.startsWith('nombre') && x !== 'nombres') || x === 'trabajador');
+  const iNoms = buscar(x => x === 'nombres');
+  const iApes = h.map((x,i) => x.includes('apellido') ? i : -1).filter(i => i >= 0);
+  const iCar  = buscar(x => x.includes('cargo'));
+  const iCon  = buscar(x => ['contacto','telefono','celular','correo','email','mail'].some(t => x.includes(t)));
+  return {iRut, iNom, iNoms, iApes, iCar, iCon, ok: iRut >= 0 && (iNom >= 0 || iNoms >= 0)};
+}
+
+/* Convierte filas del Excel en trabajadores listos para guardar */
+function procesarFilas(filas, existentes){
+  filas = filas.map(r => r.map(c => String(c ?? '').trim())).filter(r => r.some(Boolean));
+  if(!filas.length) return {out:[], rep:0, incompletas:0, inval:0, conEncabezado:false};
+  let map = mapearColumnas(filas[0]); let datos;
+  if(map.ok) datos = filas.slice(1);
+  else { map = {iRut:0, iNom:1, iNoms:-1, iApes:[], iCar:2, iCon:3}; datos = filas; } // sin encabezado: orden RUT, Nombre, Cargo, Contacto
+  const vistos = new Set(existentes.map(w => w.rut.replace(/[^0-9K]/gi,'').toUpperCase()));
+  const out = []; let rep = 0, incompletas = 0;
+  for(const r of datos){
+    const rut = r[map.iRut] || '';
+    let nombre = map.iNom >= 0 ? r[map.iNom] : [r[map.iNoms], ...map.iApes.map(i => r[i])].filter(Boolean).join(' ');
+    nombre = (nombre || '').replace(/\s+/g,' ').trim();
+    if(!/\d/.test(rut) || !nombre){ incompletas++; continue; }
+    const clave = rut.replace(/[^0-9K]/gi,'').toUpperCase();
+    if(vistos.has(clave)){ rep++; continue; }
+    vistos.add(clave);
+    out.push({rut: normRut(rut), nombre, cargo: map.iCar >= 0 ? (r[map.iCar] || '') : '', contacto: map.iCon >= 0 ? (r[map.iCon] || '') : ''});
+  }
+  return {out, rep, incompletas, inval: out.filter(x => !rutValido(x.rut)).length, conEncabezado: map.ok};
+}
+
+/* Texto pegado o CSV -> filas */
+function textoAFilas(texto){
+  return texto.split(/\r?\n/).filter(l => l.trim()).map(l => {
+    const sep = l.includes('\t') ? '\t' : l.includes(';') ? ';' : ',';
+    return l.split(sep).map(c => c.replace(/^"|"$/g,'').trim());
+  });
+}
+
+/* Lee la primera hoja de un Excel, o un CSV */
+async function leerArchivo(file){
+  const nombre = file.name.toLowerCase();
+  if(nombre.endsWith('.csv')){
+    const buf = await file.arrayBuffer();
+    let txt = new TextDecoder('utf-8').decode(buf);
+    if(txt.includes('\uFFFD')) txt = new TextDecoder('windows-1252').decode(buf); // CSV guardado desde Excel en Windows
+    return textoAFilas(txt);
+  }
+  const XLSX = await cargarLectorExcel();
+  const wb = XLSX.read(await file.arrayBuffer(), {type:'array'});
+  const hoja = wb.Sheets[wb.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(hoja, {header:1, raw:false, defval:''});
+}
+
+async function descargarPlantilla(){
+  try{
+    const XLSX = await cargarLectorExcel();
+    const hoja = XLSX.utils.aoa_to_sheet([
+      ['RUT','Nombre','Cargo','Contacto'],
+      ['12.345.678-5','Juan Pérez Soto','Mecánico','+56 9 1234 5678']
+    ]);
+    hoja['!cols'] = [{wch:14},{wch:30},{wch:20},{wch:22}];
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, hoja, 'Trabajadores');
+    XLSX.writeFile(wb, 'plantilla-trabajadores.xlsx');
+  }catch(e){ console.error(e); toast('No se pudo generar la plantilla.'); }
+}
+
 function openImport(){
-  const p = curProject(); const f=$('#formImport');
-  f.innerHTML = `<h3>Agregar trabajadores</h3><div class="sub">${esc(p.nombre)}</div>
-    <label class="f">Pega desde Excel: RUT, Nombre, Cargo y (opcional) teléfono o correo
-      <textarea name="txt" rows="8" placeholder="12.345.678-5	Juan Pérez Soto	Mecánico	+56 9 1234 5678"></textarea></label>
-    <div class="hint" id="impPrev">Una fila por trabajador. Se omiten los RUT que ya están en el proyecto.</div>
+  const p = curProject(); const f = $('#formImport');
+  let resultado = null;
+  f.innerHTML = `<h3>Cargar trabajadores</h3><div class="sub">${esc(p.nombre)}</div>
+    <div class="drop" id="drop">
+      <p><b>Arrastra aquí tu Excel</b> o</p>
+      <label class="btn primary">Elegir archivo<input type="file" id="fileIn" accept=".xlsx,.xls,.csv" class="sr"></label>
+      <p class="hint">Columnas: RUT, Nombre, Cargo y Contacto (opcional). Se lee la primera hoja.</p>
+    </div>
+    <div class="row">
+      <button type="button" class="btn ghost" id="plantilla">Descargar plantilla Excel</button>
+      <button type="button" class="btn ghost" id="togglePaste">Prefiero pegar desde Excel</button>
+    </div>
+    <div id="pasteBox" hidden><textarea rows="6" id="pasteTxt" placeholder="12.345.678-5	Juan Pérez Soto	Mecánico	+56 9 1234 5678"></textarea></div>
+    <div id="preview"></div>
+    <div class="err" id="iErr"></div>
     <div class="acts"><button type="button" class="btn" data-close>Cancelar</button><button type="submit" class="btn primary" id="impGo" disabled>Agregar</button></div>`;
-  const ta=f.elements.txt;
-  ta.oninput = () => {
-    const {out,rep}=parseNomina(ta.value, projWorkers(p.id));
-    const inval = out.filter(r=>!rutValido(r.rut)).length;
-    $('#impPrev').textContent = out.length ? `Se agregarán ${out.length} trabajadores${rep?`, ${rep} repetidos omitidos`:''}${inval?`. Ojo: ${inval} RUT no pasan la validación`:''}.` : 'Una fila por trabajador. Se omiten los RUT que ya están en el proyecto.';
-    $('#impGo').disabled = !out.length;
+
+  const mostrar = (filas, origen) => {
+    $('#iErr').textContent = '';
+    resultado = procesarFilas(filas, projWorkers(p.id));
+    const r = resultado;
+    if(!r.out.length){
+      $('#preview').innerHTML = '';
+      $('#iErr').textContent = r.rep ? `Todos los trabajadores de ${origen} ya están en el proyecto.` : `No se encontraron trabajadores en ${origen}. Revisa que tenga las columnas RUT y Nombre.`;
+      $('#impGo').disabled = true; return;
+    }
+    const extras = [r.rep && `${r.rep} ya estaban en el proyecto`, r.incompletas && `${r.incompletas} filas sin RUT o nombre`].filter(Boolean);
+    const muestra = r.out.slice(0,8).map(x => `<tr><td>${esc(x.rut)}${rutValido(x.rut)?'':' <span class="warnrut">(no válido)</span>'}</td><td>${esc(x.nombre)}</td><td>${esc(x.cargo)}</td><td>${esc(x.contacto)}</td></tr>`).join('');
+    $('#preview').innerHTML = `<p class="sum">Se agregarán <b>${r.out.length}</b> trabajadores${extras.length?` (se omiten ${extras.join(' y ')})`:''}.
+      ${r.inval?`<span class="warnrut">${r.inval} RUT no pasan la validación; revísalos después de cargar.</span>`:''}</p>
+      <div class="prev"><table><thead><tr><th>RUT</th><th>Nombre</th><th>Cargo</th><th>Contacto</th></tr></thead><tbody>${muestra}</tbody></table></div>
+      ${r.out.length>8?`<p class="hint">…y ${r.out.length-8} más.</p>`:''}
+      ${r.conEncabezado?'':'<p class="hint">No se encontraron encabezados: se asumió el orden RUT, Nombre, Cargo, Contacto.</p>'}`;
+    $('#impGo').disabled = false; $('#impGo').textContent = `Agregar ${r.out.length}`;
   };
+
+  const usarArchivo = async file => {
+    if(!file) return;
+    if(!/\.(xlsx|xls|csv)$/i.test(file.name)){ $('#iErr').textContent='Usa un archivo .xlsx, .xls o .csv.'; return; }
+    $('#preview').innerHTML = '<p class="hint">Leyendo archivo…</p>';
+    try{ mostrar(await leerArchivo(file), `"${file.name}"`); }
+    catch(e){ console.error(e); $('#preview').innerHTML=''; $('#iErr').textContent='No se pudo leer el archivo. Revisa que no esté protegido con contraseña.'; }
+  };
+
+  $('#fileIn').onchange = e => usarArchivo(e.target.files[0]);
+  const drop = $('#drop');
+  drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+  drop.ondragleave = () => drop.classList.remove('over');
+  drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); usarArchivo(e.dataTransfer.files[0]); };
+  $('#plantilla').onclick = descargarPlantilla;
+  $('#togglePaste').onclick = () => { const b=$('#pasteBox'); b.hidden=!b.hidden; if(!b.hidden) $('#pasteTxt').focus(); };
+  $('#pasteTxt').oninput = e => e.target.value.trim() ? mostrar(textoAFilas(e.target.value), 'el texto pegado') : ($('#preview').innerHTML='', $('#impGo').disabled=true);
+
   f.onsubmit = async e => {
     e.preventDefault();
-    const {out}=parseNomina(ta.value, projWorkers(p.id));
-    $('#impGo').disabled=true; $('#impGo').textContent='Agregando…';
+    if(!resultado || !resultado.out.length) return;
+    const lista = resultado.out; const btn = $('#impGo'); btn.disabled = true;
     try{
-      const b = writeBatch(db); const st = stamp();
-      out.forEach(r => b.set(doc(db,'trabajadores',uid('w')), {proyectoId:p.id, ...r, docs:{}, creado:new Date().toISOString(), ...st}));
-      await b.commit();
-      $('#dlgImport').close(); toast(`${out.length} trabajadores agregados`);
-    }catch(err){ dbErr(err); $('#impGo').disabled=false; $('#impGo').textContent='Agregar'; }
+      // Firestore acepta hasta 500 operaciones por lote: se guardan en grupos de 400
+      for(let i=0; i<lista.length; i+=400){
+        btn.textContent = `Guardando ${Math.min(i+400, lista.length)} de ${lista.length}…`;
+        const b = writeBatch(db); const st = stamp();
+        lista.slice(i, i+400).forEach(r => b.set(doc(db,'trabajadores',uid('w')), {proyectoId:p.id, ...r, docs:{}, creado:new Date().toISOString(), ...st}));
+        await b.commit();
+      }
+      $('#dlgImport').close(); toast(`${lista.length} trabajadores agregados`);
+    }catch(err){ dbErr(err); btn.disabled=false; btn.textContent=`Agregar ${lista.length}`; }
   };
-  $('#dlgImport').showModal(); ta.focus();
+  $('#dlgImport').showModal();
 }
 
 /* =========================================================

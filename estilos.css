@@ -151,3 +151,15 @@ label.f input,label.f select{width:100%}
 .userbox{color:var(--muted);font-size:.9rem}
 .band a.folder{color:var(--petrol);font-weight:600}
 .cell .clip{margin-left:auto;font-size:.8rem;opacity:.8}
+
+/* ---------- Carga masiva de trabajadores ---------- */
+#dlgImport{width:min(760px,calc(100vw - 24px))}
+.drop{border:2px dashed var(--line);border-radius:12px;padding:22px 16px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:8px}
+.drop.over{border-color:var(--petrol);background:var(--petrol-soft)}
+.drop p{margin:0}
+.sr{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden}
+.prev{overflow-x:auto;border:1px solid var(--line);border-radius:10px}
+.prev table{min-width:0;font-size:.9rem}
+.prev th,.prev td{padding:6px 10px}
+.prev th{position:static}
+.sum{margin:0}
