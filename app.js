@@ -35,7 +35,7 @@ const DOCS_DEFAULT = CFG.documentosPorDefecto;
 /* =========================================================
    Estado de la app
    ========================================================= */
-const S = {ready:false, user:null, projects:[], workers:[], current:null, filter:'todos', q:''};
+const S = {ready:false, user:null, projects:[], workers:[], current:null, view:'inicio', filter:'todos', q:''};
 let auth, db, unsubs = [];
 
 const $ = s => document.querySelector(s);
@@ -61,7 +61,7 @@ async function removeProject(pid){
     const b = writeBatch(db); ws.slice(i,i+400).forEach(w=>b.delete(doc(db,'trabajadores',w.id))); await b.commit();
   }
   await deleteDoc(doc(db,'proyectos',pid));
-  if(S.current===pid){ S.current=null; lsSet('cd-current', null); }
+  if(S.current===pid){ S.current=null; S.view='inicio'; lsSet('cd-current', null); }
 }
 function dbErr(e){
   console.error(e);
@@ -110,6 +110,46 @@ function renderDenied(){
 /* =========================================================
    Render principal
    ========================================================= */
+/* Texto del plazo de acreditación: "12 días", "Vence hoy", "Vencido hace 3 d" */
+function plazoInfo(p){
+  if(!p.fecha) return null;
+  const days = Math.round((new Date(p.fecha+'T00:00:00') - new Date(today()+'T00:00:00'))/86400000);
+  return {
+    cls: days<0 ? 'late' : days<=CFG.diasAvisoPlazo ? 'soon' : '',
+    txt: days<0 ? `Vencido hace ${-days} d` : days===0 ? 'Vence hoy' : `${days} días`,
+    days
+  };
+}
+
+/* Pantalla de inicio: todos los proyectos */
+function renderInicio(){
+  // Primero los que tienen plazo más cercano; los sin fecha al final, del más nuevo al más antiguo
+  const lista = S.projects.slice().sort((a,b)=>{
+    if(a.fecha && b.fecha) return a.fecha.localeCompare(b.fecha);
+    if(a.fecha) return -1; if(b.fecha) return 1;
+    return (b.creado||'').localeCompare(a.creado||'');
+  });
+  const cards = lista.map(p=>{
+    const ws = projWorkers(p.id);
+    const sems = ws.map(w=>semaforo(w,p));
+    const nV = sems.filter(s=>s.c==='v').length;
+    const pl = plazoInfo(p);
+    const strip = ws.length ? `<span class="strip" aria-hidden="true">${sems.slice().sort((x,y)=>y.rank-x.rank).map(s=>`<span class="${s.c}"></span>`).join('')}</span>` : '';
+    return `<button type="button" class="pcard" data-act="open" data-p="${p.id}">
+      <span class="pc-name">${esc(p.nombre)}</span>
+      <span class="pc-meta">${esc(p.mandante||'Sin mandante')}</span>
+      <span class="pc-ready">${ws.length ? `<b>${nV}</b> de ${ws.length} listos para acreditar` : 'Sin trabajadores cargados'}</span>
+      ${strip}
+      ${pl ? `<span class="pc-dl ${pl.cls}">Plazo: ${pl.txt} (${esc(fmtDate(p.fecha))})</span>` : '<span class="pc-dl">Sin fecha límite</span>'}
+    </button>`;
+  }).join('');
+  $('#app').innerHTML = `<section class="home-head"><h1 class="pname">Mis proyectos</h1>
+      <p class="pmeta">${S.projects.length} proyecto${S.projects.length>1?'s':''}. Toca uno para ver a sus trabajadores.</p></section>
+    <div class="pgrid">${cards}
+      <button type="button" class="pcard new" data-act="newProject"><span class="plus" aria-hidden="true">+</span>Nuevo proyecto</button>
+    </div>`;
+}
+
 function render(){
   if(!S.user) return;
   $('#topbar').hidden = false;
@@ -123,23 +163,19 @@ function render(){
     return;
   }
   const p = curProject();
-  if(!p){ S.current = S.projects[0].id; return render(); }
+  if(S.view==='inicio' || !p){ S.view='inicio'; renderInicio(); return; }
   const ws = projWorkers(p.id);
   const sems = ws.map(w=>({w, s:semaforo(w,p)}));
   const nV=sems.filter(x=>x.s.c==='v').length, nA=sems.filter(x=>x.s.c==='a').length, nR=sems.filter(x=>x.s.c==='r').length;
 
-  let dl='';
-  if(p.fecha){
-    const days = Math.round((new Date(p.fecha+'T00:00:00') - new Date(today()+'T00:00:00'))/86400000);
-    const cls = days<0?'late':days<=CFG.diasAvisoPlazo?'soon':'';
-    const txt = days<0?`Vencido hace ${-days} d`:days===0?'Vence hoy':`${days} días`;
-    dl = `<div class="deadline"><div class="d ${cls}">${txt}</div><small>para acreditar (${esc(fmtDate(p.fecha))})</small></div>`;
-  }
+  const pl = plazoInfo(p);
+  const dl = pl ? `<div class="deadline"><div class="d ${pl.cls}">${pl.txt}</div><small>para acreditar (${esc(fmtDate(p.fecha))})</small></div>` : '';
+  const volver = `<button type="button" class="btn ghost back" data-act="home">← Mis proyectos</button>`;
   const strip = ws.length ? `<div class="strip" aria-hidden="true">${
       sems.slice().sort((a,b)=>b.s.rank-a.s.rank).map(x=>`<span class="${x.s.c}" title="${esc(x.w.nombre)}: ${esc(x.s.t)}"></span>`).join('')}</div>` : '';
   const folder = isUrl(p.carpeta) ? ` · <a class="folder" href="${esc(p.carpeta)}" target="_blank" rel="noopener">Abrir carpeta de documentos</a>` : '';
 
-  const band = `<section class="band">
+  const band = volver + `<section class="band">
     <div class="band-head">
       <div><h1 class="pname">${esc(p.nombre)}</h1><div class="pmeta">${esc(p.mandante||'Sin mandante')} · ${p.docs.length} documentos por trabajador${folder}</div></div>
       ${dl}
@@ -201,12 +237,9 @@ function renderProjBar(){
   const bar = $('#projBar');
   const who = `<span class="userbox">${esc(S.user.email)}</span><button class="btn ghost" type="button" data-act="logout">Salir</button>`;
   if(!S.ready || !S.projects.length){ bar.innerHTML=who; return; }
-  const opts = S.projects.slice().sort((a,b)=>(b.creado||'').localeCompare(a.creado||''))
-    .map(p=>`<option value="${p.id}" ${p.id===S.current?'selected':''}>${esc(p.nombre)}</option>`).join('');
-  bar.innerHTML = `<select id="projSel" aria-label="Proyecto">${opts}</select>
-    <button class="btn" type="button" data-act="editProject">Editar</button>
+  const enProyecto = S.view==='proyecto' && curProject();
+  bar.innerHTML = `${enProyecto?'<button class="btn" type="button" data-act="editProject">Editar proyecto</button>':''}
     <button class="btn primary" type="button" data-act="newProject">Nuevo proyecto</button>${who}`;
-  $('#projSel').onchange = e => { S.current=e.target.value; lsSet('cd-current',S.current); S.filter='todos'; S.q=''; render(); };
 }
 
 /* =========================================================
@@ -248,7 +281,7 @@ function openProject(edit){
     const carpeta = fd.get('carpeta').trim();
     if(carpeta && !isUrl(carpeta)){ $('#pErr').textContent='El link de la carpeta debe comenzar con https://'; return; }
     const obj = { id: p?.id || uid('p'), nombre: fd.get('nombre').trim(), mandante: fd.get('mandante').trim(), fecha: fd.get('fecha')||'', carpeta, docs: clean, creado: p?.creado || new Date().toISOString() };
-    try{ await putProject(obj); S.current=obj.id; lsSet('cd-current',obj.id); $('#dlgProject').close(); toast(p?'Cambios guardados':'Proyecto creado'); render(); }
+    try{ await putProject(obj); S.current=obj.id; S.view='proyecto'; lsSet('cd-current',obj.id); $('#dlgProject').close(); toast(p?'Cambios guardados':'Proyecto creado'); render(); }
     catch(err){ dbErr(err); }
   };
   $('#dlgProject').showModal();
@@ -518,6 +551,8 @@ document.addEventListener('click', e => {
   else if(a==='cell') openCell(t.dataset.w, t.dataset.k);
   else if(a==='worker') openWorker(t.dataset.w);
   else if(a==='filter'){ S.filter=t.dataset.f; render(); }
+  else if(a==='home'){ S.view='inicio'; S.filter='todos'; S.q=''; render(); window.scrollTo(0,0); }
+  else if(a==='open'){ S.current=t.dataset.p; S.view='proyecto'; S.filter='todos'; S.q=''; lsSet('cd-current',S.current); render(); window.scrollTo(0,0); }
   else if(a==='pend') openPend();
   else if(a==='export') exportCsv();
   else if(a==='logout') signOut(auth);
@@ -537,6 +572,7 @@ function subscribe(){
 
 document.title = CFG.nombreApp;
 $('#brandName').textContent = CFG.nombreApp;
+$('.brand').dataset.act = 'home'; $('.brand').title = 'Ir a mis proyectos';
 
 if(String(firebaseConfig.apiKey).startsWith('PEGAR')){ renderSetup(); }
 else {
