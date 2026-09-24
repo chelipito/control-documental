@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Control documental · Acreditación</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📋</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/estilos.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top" id="topbar" hidden>
+    <div class="brand"><span class="mark" aria-hidden="true">✓</span><span id="brandName">Control documental</span></div>
+    <div class="row" id="projBar"></div>
+  </header>
+  <div id="banner"></div>
+  <main id="app"><p class="note">Cargando…</p></main>
+</div>
+
+<dialog id="dlgProject"><form class="dlg" id="formProject"></form></dialog>
+<dialog id="dlgImport"><form class="dlg" id="formImport"></form></dialog>
+<dialog id="dlgCell"><form class="dlg" id="formCell"></form></dialog>
+<dialog id="dlgWorker"><form class="dlg" id="formWorker"></form></dialog>
+<dialog id="dlgPend"><form class="dlg" id="formPend"></form></dialog>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
