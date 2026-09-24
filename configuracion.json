@@ -1,0 +1,17 @@
+{
+  "nombreApp": "Control documental",
+  "documentosPorDefecto": [
+    "Contrato de trabajo",
+    "Anexo de contrato",
+    "Reglamento interno (recepción)",
+    "ODI / Obligación de informar"
+  ],
+  "estados": {
+    "pendiente": "Pendiente",
+    "recibido": "Recibido",
+    "aprobado": "Aprobado",
+    "observado": "Observado"
+  },
+  "diasAvisoPlazo": 7,
+  "estadoAlEncontrar": "aprobado"
+}
