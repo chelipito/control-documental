@@ -39,7 +39,7 @@ const reqDe = d => Math.max(1, parseInt(d && d.requeridos) || 1);
 /* =========================================================
    Estado de la app
    ========================================================= */
-const S = {ready:false, user:null, projects:[], workers:[], current:null, view:'inicio', filter:'todos', q:''};
+const S = {ready:false, user:null, projects:[], workers:[], current:null, view:'inicio', filter:'todos', q:'', nombre:''};
 let auth, db, unsubs = [];
 
 const $ = s => document.querySelector(s);
@@ -65,7 +65,7 @@ async function removeProject(pid){
     const b = writeBatch(db); ws.slice(i,i+400).forEach(w=>b.delete(doc(db,'trabajadores',w.id))); await b.commit();
   }
   await deleteDoc(doc(db,'proyectos',pid));
-  if(S.current===pid){ S.current=null; S.view='inicio'; lsSet('cd-current', null); }
+  if(S.current===pid){ S.current=null; S.view='proyectos'; lsSet('cd-current', null); }
 }
 function dbErr(e){
   console.error(e);
@@ -77,15 +77,125 @@ function dbErr(e){
 /* =========================================================
    Pantallas de acceso
    ========================================================= */
+/* =========================================================
+   Interfaz: barra lateral, migas y avatar
+   ========================================================= */
+function setSesion(on){ document.body.classList.toggle('sin-sesion', !on); if(!on) cerrarMenu(); }
+function cerrarMenu(){ document.body.classList.remove('menu-abierto'); }
+
+const ICON = {
+  home:   '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 10.5 12 3.5l8.5 7V20a1 1 0 0 1-1 1H15v-6H9v6H4.5a1 1 0 0 1-1-1z"/></svg>',
+  folder: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2h8.5A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg>',
+  plus:   '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
+  out:    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l5-5-5-5M15 12H4"/></svg>'
+};
+
+/* Color general de un proyecto para el punto de la barra lateral */
+function colorProyecto(p){
+  const ws = projWorkers(p.id); if(!ws.length) return 'n';
+  const s = ws.map(w => semaforo(w,p).c);
+  return s.includes('r') ? 'r' : s.every(x => x==='v') ? 'v' : 'a';
+}
+
+function nombreVisible(){
+  if(S.nombre) return S.nombre;
+  const dn = S.user?.displayName; if(dn) return dn.split(' ')[0];
+  const pre = (S.user?.email||'').split('@')[0].split(/[._-]/)[0];
+  return pre ? pre.charAt(0).toUpperCase() + pre.slice(1) : '';
+}
+function iniciales(){
+  const n = (S.user?.displayName || S.nombre || S.user?.email || '').replace(/@.*/,'').split(/[\s._-]+/).filter(Boolean);
+  return ((n[0]||'')[0]||'').toUpperCase() + ((n[1]||'')[0]||'').toUpperCase();
+}
+
+function renderChrome(){
+  const p = curProject();
+  const enProy = S.view==='proyecto' && p;
+  const navI = (act, icon, txt, activo, extra='') => `<button type="button" class="nav-i" data-act="${act}" ${activo?'aria-current="page"':''}>${icon}<span>${txt}</span>${extra}</button>`;
+  const lista = S.projects.slice().sort((a,b)=>(b.creado||'').localeCompare(a.creado||''));
+  $('#sideNav').innerHTML = `
+    <div class="side-sec">Workspace</div>
+    ${navI('home', ICON.home, 'Inicio', S.view==='inicio')}
+    ${navI('projects', ICON.folder, 'Proyectos', S.view==='proyectos', S.projects.length?`<span class="nav-badge">${S.projects.length}</span>`:'')}
+    ${lista.length ? `<div class="side-sec">Mis proyectos</div>${lista.map(x=>`<button type="button" class="nav-i nav-sub" data-act="open" data-p="${x.id}" ${enProy && x.id===p.id?'aria-current="page"':''}><i class="pdot ${colorProyecto(x)}" aria-hidden="true"></i><span>${esc(x.nombre)}</span></button>`).join('')}` : ''}
+    <button type="button" class="nav-i nav-new" data-act="newProject">${ICON.plus}<span>Nuevo proyecto</span></button>`;
+  $('#sideFoot').innerHTML = `<span class="who-mail">${esc(S.user?.email||'')}</span>
+    <button type="button" class="nav-i" data-act="logout">${ICON.out}<span>Cerrar sesión</span></button>`;
+  const ws = '<span class="ws">Workspace</span>';
+  const sep = '<span class="sep" aria-hidden="true">›</span>';
+  $('#crumbs').innerHTML = S.view==='proyecto' && p
+    ? `${ws}${sep}<button type="button" data-act="projects">Proyectos</button>${sep}<span class="cur">${esc(p.nombre)}</span>`
+    : `${ws}${sep}<span class="cur">${S.view==='proyectos'?'Proyectos':'Inicio'}</span>`;
+  $('#avatar').textContent = iniciales() || '·';
+  $('#avatar').title = S.user?.email || '';
+}
+
+function fechaLarga(){
+  const t = new Date().toLocaleDateString('es-CL', {weekday:'long', day:'numeric', month:'long'});
+  return (t.charAt(0).toUpperCase() + t.slice(1)).replace(',', '');
+}
+function saludo(){ const h = new Date().getHours(); return h < 12 ? 'Buenos días' : h < 20 ? 'Buenas tardes' : 'Buenas noches'; }
+
+/* Documentos que le faltan a un trabajador, en texto */
+function faltantesDe(w, p){
+  return p.docs.filter(d => { const e = cellOf(w,d.key).estado; return e==='pendiente' || e==='observado'; }).map(d => d.nombre);
+}
+
+/* Pantalla de inicio: resumen de todos los proyectos */
+function renderDashboard(){
+  const datos = S.projects.map(p => { const ws = projWorkers(p.id); return {p, ws, sems: ws.map(w => ({w, s:semaforo(w,p)}))}; });
+  const todos = datos.flatMap(x => x.sems);
+  const nV = todos.filter(x=>x.s.c==='v').length, nA = todos.filter(x=>x.s.c==='a').length, nR = todos.filter(x=>x.s.c==='r').length;
+  const plazos = datos.filter(x => x.p.fecha).map(x => ({...x, pl: plazoInfo(x.p)})).sort((a,b) => a.p.fecha.localeCompare(b.p.fecha));
+  const porVencer = plazos.filter(x => x.pl.days <= CFG.diasAvisoPlazo && x.ws.some(w => semaforo(w, x.p).c !== 'v')).length;
+
+  const atencion = datos.flatMap(x => x.sems.filter(y => y.s.c==='r').map(y => ({...y, p:x.p, pl:plazoInfo(x.p)})))
+    .sort((a,b) => (a.p.fecha||'9999').localeCompare(b.p.fecha||'9999') || a.w.nombre.localeCompare(b.w.nombre,'es'));
+  const lead = !todos.length ? 'Aún no hay trabajadores cargados.'
+    : nR ? `Tienes ${nR} trabajador${nR!==1?'es':''} con documentos pendientes${porVencer?` y ${porVencer} proyecto${porVencer!==1?'s':''} con plazo cercano`:''}.`
+    : nA ? `No hay alertas. ${nA} trabajador${nA!==1?'es están':' está'} en curso.` : 'Todo al día: todos los trabajadores están listos para acreditar.';
+
+  const kpi = (cls, n, t) => `<div class="kpi ${cls}"><b>${n}</b><span>${t}</span></div>`;
+  const filasAt = atencion.slice(0,8).map(x => `<li><button type="button" class="arow" data-act="open" data-p="${x.p.id}" data-f="r">
+      <span class="lamp r" aria-hidden="true"></span>
+      <span class="grow"><span class="nm">${esc(x.w.nombre)}</span><span class="sub">${esc(x.p.nombre)} · Falta: ${esc(faltantesDe(x.w,x.p).join(', '))}</span></span>
+      ${x.pl?`<span class="tag ${x.pl.cls}">${esc(x.pl.txt)}</span>`:''}</button></li>`).join('');
+  const filasPl = plazos.slice(0,6).map(x => { const v = x.sems.filter(y=>y.s.c==='v').length, pct = x.ws.length ? Math.round(v/x.ws.length*100) : 0;
+    return `<li><button type="button" class="plrow" data-act="open" data-p="${x.p.id}">
+      <span class="pl-top"><span class="nm">${esc(x.p.nombre)}</span><span class="tag ${x.pl.cls}">${esc(x.pl.txt)}</span></span>
+      <span class="pbar" aria-hidden="true"><i style="width:${pct}%"></i></span>
+      <span class="sub">${v} de ${x.ws.length} listos · ${esc(fmtDate(x.p.fecha))}</span></button></li>`; }).join('');
+
+  $('#app').innerHTML = `
+    <div class="eyebrow">Workspace <i></i><span>${esc(fechaLarga())}</span></div>
+    <h1 class="h1">${saludo()}${nombreVisible()?`, ${esc(nombreVisible())}`:''}</h1>
+    <p class="lead">${lead}</p>
+    <div class="dash">
+      <section class="card">
+        <div class="card-h"><h2>Estado de acreditación</h2><p>Todos los proyectos · ${todos.length} trabajador${todos.length!==1?'es':''}</p></div>
+        <div class="kpis">
+          ${kpi('r', nR, 'Con pendientes')}${kpi('a', nA, 'En curso')}${kpi('v', nV, 'Listos')}${kpi('', porVencer, 'Plazos por vencer')}
+        </div>
+        ${atencion.length ? `<div class="card-sub">Requieren atención</div><ul class="alist">${filasAt}</ul>${atencion.length>8?`<p class="empty-s">…y ${atencion.length-8} más</p>`:''}`
+          : `<p class="empty-s">${todos.length ? 'Nadie con documentos pendientes. 🎉' : 'Cuando cargues trabajadores, los pendientes aparecen acá.'}</p>`}
+        <div class="card-f"><button type="button" class="linkbtn" data-act="projects">Ver todos los proyectos →</button></div>
+      </section>
+      <section class="card">
+        <div class="card-h"><h2>Próximos plazos</h2><p>Ordenados por fecha de acreditación</p></div>
+        ${filasPl ? `<ul class="plist">${filasPl}</ul>` : `<p class="empty-s">Ningún proyecto tiene fecha límite. <button type="button" class="linkbtn" data-act="projects">Ir a Proyectos →</button></p>`}
+      </section>
+    </div>`;
+}
+
 function renderSetup(){
-  $('#topbar').hidden = true;
+  setSesion(false);
   $('#app').innerHTML = `<section class="login"><h1>Falta configurar Firebase</h1>
     <p>Abre <b>index.html</b>, busca el bloque <b>firebaseConfig</b> y pega los datos de tu proyecto de Firebase. La guía paso a paso está en el archivo README.</p></section>`;
 }
 function renderLogin(msg){
-  $('#topbar').hidden = true; $('#banner').innerHTML='';
+  setSesion(false); $('#banner').innerHTML='';
   $('#app').innerHTML = `<section class="login">
-    <h1>${esc(CFG.nombreApp)}</h1><p>Ingresa con la cuenta que te habilitaron.</p>
+    <div class="login-brand">${esc(CFG.nombreApp)}<span class="dot">.</span></div><h1>Control documental</h1><p>Ingresa con la cuenta que te habilitaron.</p>
     <button class="btn primary" type="button" id="gBtn">Ingresar con Google</button>
     <div class="or">o con correo</div>
     <form id="eForm" style="display:flex;flex-direction:column;gap:10px">
@@ -104,7 +214,7 @@ function renderLogin(msg){
     try{ await sendPasswordResetEmail(auth, em); $('#lErr').textContent='Si el correo existe, te llegará un enlace para crear una nueva contraseña.'; }catch(e){ $('#lErr').textContent=errMsg(e); } };
 }
 function renderDenied(){
-  $('#topbar').hidden = true;
+  setSesion(false);
   $('#app').innerHTML = `<section class="login"><h1>Sin acceso</h1>
     <p>La cuenta <b>${esc(S.user.email)}</b> aún no está habilitada. Pide al administrador que la agregue a la lista de permitidos.</p>
     <button class="btn" type="button" id="outBtn">Usar otra cuenta</button></section>`;
@@ -125,8 +235,8 @@ function plazoInfo(p){
   };
 }
 
-/* Pantalla de inicio: todos los proyectos */
-function renderInicio(){
+/* Pantalla Proyectos: todos los proyectos */
+function renderProyectos(){
   // Primero los que tienen plazo más cercano; los sin fecha al final, del más nuevo al más antiguo
   const lista = S.projects.slice().sort((a,b)=>{
     if(a.fecha && b.fecha) return a.fecha.localeCompare(b.fecha);
@@ -147,8 +257,8 @@ function renderInicio(){
       ${pl ? `<span class="pc-dl ${pl.cls}">Plazo: ${pl.txt} (${esc(fmtDate(p.fecha))})</span>` : '<span class="pc-dl">Sin fecha límite</span>'}
     </button>`;
   }).join('');
-  $('#app').innerHTML = `<section class="home-head"><h1 class="pname">Mis proyectos</h1>
-      <p class="pmeta">${S.projects.length} proyecto${S.projects.length>1?'s':''}. Toca uno para ver a sus trabajadores.</p></section>
+  $('#app').innerHTML = `<div class="eyebrow">Workspace <i></i><span>${S.projects.length} proyecto${S.projects.length!==1?'s':''}</span></div>
+    <h1 class="h1">Proyectos</h1><p class="lead">Toca un proyecto para ver a sus trabajadores y el estado de sus documentos.</p>
     <div class="pgrid">${cards}
       <button type="button" class="pcard new" data-act="newProject"><span class="plus" aria-hidden="true">+</span>Nuevo proyecto</button>
     </div>`;
@@ -156,33 +266,35 @@ function renderInicio(){
 
 function render(){
   if(!S.user) return;
-  $('#topbar').hidden = false;
-  renderProjBar();
+  setSesion(true);
+  renderChrome();
   const app = $('#app');
   if(!S.ready){ app.innerHTML='<p class="note">Cargando datos…</p>'; return; }
   if(!S.projects.length){
-    app.innerHTML = `<section class="empty"><h2>Crea tu primer proyecto</h2>
+    app.innerHTML = `<div class="eyebrow">Workspace <i></i><span>${esc(fechaLarga())}</span></div>
+      <h1 class="h1">${saludo()}${nombreVisible()?`, ${esc(nombreVisible())}`:''}</h1><p class="lead">Empecemos por tu primer proyecto.</p>
+      <section class="empty"><h2>Crea tu primer proyecto</h2>
       <p>Cada licitación adjudicada es un proyecto. Defines los documentos que pide el mandante, cargas la nómina y vas marcando lo que llega.</p>
       <button class="btn primary" type="button" data-act="newProject">Nuevo proyecto</button></section>`;
     return;
   }
   const p = curProject();
-  if(S.view==='inicio' || !p){ S.view='inicio'; renderInicio(); return; }
+  if(S.view==='inicio'){ renderDashboard(); return; }
+  if(S.view==='proyectos' || !p){ if(S.view!=='proyectos'){ S.view='proyectos'; renderChrome(); } renderProyectos(); return; }
   const ws = projWorkers(p.id);
   const sems = ws.map(w=>({w, s:semaforo(w,p)}));
   const nV=sems.filter(x=>x.s.c==='v').length, nA=sems.filter(x=>x.s.c==='a').length, nR=sems.filter(x=>x.s.c==='r').length;
 
   const pl = plazoInfo(p);
   const dl = pl ? `<div class="deadline"><div class="d ${pl.cls}">${pl.txt}</div><small>para acreditar (${esc(fmtDate(p.fecha))})</small></div>` : '';
-  const volver = `<button type="button" class="btn ghost back" data-act="home">← Mis proyectos</button>`;
   const strip = ws.length ? `<div class="strip" aria-hidden="true">${
       sems.slice().sort((a,b)=>b.s.rank-a.s.rank).map(x=>`<span class="${x.s.c}" title="${esc(x.w.nombre)}: ${esc(x.s.t)}"></span>`).join('')}</div>` : '';
   const folder = isUrl(p.carpeta) ? ` · <a class="folder" href="${esc(p.carpeta)}" target="_blank" rel="noopener">Abrir carpeta de documentos</a>` : '';
 
-  const band = volver + `<section class="band">
+  const band = `<section class="band">
     <div class="band-head">
-      <div><h1 class="pname">${esc(p.nombre)}</h1><div class="pmeta">${esc(p.mandante||'Sin mandante')} · ${p.docs.length} documentos por trabajador${folder}${p.ultimaLectura?` · Carpeta leída el ${esc(fmtDate(p.ultimaLectura.slice(0,10)))}`:''}</div></div>
-      ${dl}
+      <div><div class="eyebrow">Proyecto <i></i><span>${esc(p.mandante||'Sin mandante')}</span></div><h1 class="pname">${esc(p.nombre)}</h1><div class="pmeta">${p.docs.length} documentos por trabajador${folder}${p.ultimaLectura?` · Carpeta leída el ${esc(fmtDate(p.ultimaLectura.slice(0,10)))}`:''}</div></div>
+      <div class="band-side">${dl}<button type="button" class="btn" data-act="editProject">Editar proyecto</button></div>
     </div>
     ${ws.length ? `<div class="ready"><span class="n">${nV}</span><span class="of">de ${ws.length} trabajadores listos para acreditar</span></div>${strip}
     <div class="legend"><span><i class="dot v"></i><b>${nV}</b> listos</span><span><i class="dot a"></i><b>${nA}</b> en curso</span><span><i class="dot r"></i><b>${nR}</b> con observaciones o sin documentos</span></div>` : ''}
@@ -236,15 +348,6 @@ function render(){
 
   const qi = $('#q');
   if(qi) qi.addEventListener('input', e=>{ S.q=e.target.value; const pos=e.target.selectionStart; render(); const n=$('#q'); n.focus(); n.setSelectionRange(pos,pos); });
-}
-
-function renderProjBar(){
-  const bar = $('#projBar');
-  const who = `<span class="userbox">${esc(S.user.email)}</span><button class="btn ghost" type="button" data-act="logout">Salir</button>`;
-  if(!S.ready || !S.projects.length){ bar.innerHTML=who; return; }
-  const enProyecto = S.view==='proyecto' && curProject();
-  bar.innerHTML = `${enProyecto?'<button class="btn" type="button" data-act="editProject">Editar proyecto</button>':''}
-    <button class="btn primary" type="button" data-act="newProject">Nuevo proyecto</button>${who}`;
 }
 
 /* =========================================================
@@ -798,14 +901,16 @@ document.addEventListener('click', e => {
   const t = e.target.closest('[data-act],[data-close]'); if(!t) return;
   if(t.hasAttribute('data-close')){ t.closest('dialog').close(); return; }
   const a=t.dataset.act;
-  if(a==='newProject') openProject(false);
+  if(a==='newProject'){ cerrarMenu(); openProject(false); }
   else if(a==='editProject') openProject(true);
   else if(a==='import') openImport();
   else if(a==='cell') openCell(t.dataset.w, t.dataset.k);
   else if(a==='worker') openWorker(t.dataset.w);
   else if(a==='filter'){ S.filter=t.dataset.f; render(); }
-  else if(a==='home'){ S.view='inicio'; S.filter='todos'; S.q=''; render(); window.scrollTo(0,0); }
-  else if(a==='open'){ S.current=t.dataset.p; S.view='proyecto'; S.filter='todos'; S.q=''; lsSet('cd-current',S.current); render(); window.scrollTo(0,0); }
+  else if(a==='home'){ S.view='inicio'; S.filter='todos'; S.q=''; cerrarMenu(); render(); window.scrollTo(0,0); }
+  else if(a==='projects'){ S.view='proyectos'; S.filter='todos'; S.q=''; cerrarMenu(); render(); window.scrollTo(0,0); }
+  else if(a==='menu'){ document.body.classList.toggle('menu-abierto'); }
+  else if(a==='open'){ cerrarMenu(); S.current=t.dataset.p; S.view='proyecto'; S.filter=t.dataset.f||'todos'; S.q=''; lsSet('cd-current',S.current); render(); window.scrollTo(0,0); }
   else if(a==='pend') openPend();
   else if(a==='sync') openSync();
   else if(a==='export') exportCsv();
@@ -824,9 +929,9 @@ function subscribe(){
   unsubs.push(onSnapshot(collection(db,'trabajadores'), snap=>{ S.workers=snap.docs.map(x=>({id:x.id, ...x.data()})); gotW=true; done(); }, onErr));
 }
 
-document.title = CFG.nombreApp;
+document.title = `${CFG.nombreApp.charAt(0)}${CFG.nombreApp.slice(1).toLowerCase()} · Control documental`;
 $('#brandName').textContent = CFG.nombreApp;
-$('.brand').dataset.act = 'home'; $('.brand').title = 'Ir a mis proyectos';
+$('#brand').dataset.act = 'home'; $('#brand').title = 'Ir al inicio';
 
 if(String(firebaseConfig.apiKey).startsWith('PEGAR')){ renderSetup(); }
 else {
@@ -840,8 +945,9 @@ else {
     try{
       const ok = await getDoc(doc(db,'permitidos', (user.email||'').toLowerCase()));
       if(!ok.exists()){ renderDenied(); return; }
+      const nm = String(ok.data().nombre || '').trim().split(' ')[0]; S.nombre = nm ? nm.charAt(0).toUpperCase() + nm.slice(1) : '';
     }catch(e){ console.error(e); renderDenied(); return; }
-    S.current = lsGet('cd-current', null);
+    S.current = lsGet('cd-current', null); S.view = 'inicio';
     render(); subscribe();
   });
 }

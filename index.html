@@ -3,22 +3,36 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Control documental · Acreditación</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📋</text></svg>">
+<title>Mokoto · Control documental</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2220%22 fill=%22%231C2640%22/><text x=%2222%22 y=%2272%22 font-size=%2262%22 font-family=%22Arial%22 font-weight=%22700%22 fill=%22white%22>M</text><rect x=%2272%22 y=%2260%22 width=%2212%22 height=%2212%22 fill=%22%23E0322B%22/></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="estilos.css">
 </head>
-<body>
-<div class="wrap">
-  <header class="top" id="topbar" hidden>
-    <div class="brand"><span class="mark" aria-hidden="true">✓</span><span id="brandName">Control documental</span></div>
-    <div class="row" id="projBar"></div>
-  </header>
-  <div id="banner"></div>
-  <main id="app"><p class="note">Cargando…</p></main>
+<body class="sin-sesion">
+<div class="shell">
+  <aside class="side" id="side" aria-label="Menú principal">
+    <button type="button" class="brand" id="brand"><span id="brandName">MOKOTO</span><span class="dot">.</span></button>
+    <nav id="sideNav"></nav>
+    <div class="side-foot" id="sideFoot"></div>
+  </aside>
+  <div class="scrim" data-act="menu" aria-hidden="true"></div>
+  <div class="mainc">
+    <header class="topbar">
+      <button type="button" class="menu-btn" data-act="menu" aria-label="Abrir menú">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+      <nav class="crumbs" id="crumbs" aria-label="Ubicación"></nav>
+      <div class="avatar" id="avatar" aria-hidden="true"></div>
+    </header>
+    <div class="wrap">
+      <div id="banner"></div>
+      <main id="app"><p class="note">Cargando…</p></main>
+    </div>
+  </div>
 </div>
+<button type="button" class="fab" data-act="newProject" title="Nuevo proyecto" aria-label="Nuevo proyecto">+</button>
 
 <dialog id="dlgProject"><form class="dlg" id="formProject"></form></dialog>
 <dialog id="dlgImport"><form class="dlg" id="formImport"></form></dialog>
