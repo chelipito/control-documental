@@ -1,0 +1,33 @@
+{
+  "nombreApp": "MOKOTO",
+  "documentosPorDefecto": [
+    {
+      "nombre": "IRL",
+      "carpeta": "IRL",
+      "archivosRequeridos": 1
+    },
+    {
+      "nombre": "Capacitaciones",
+      "carpeta": "Capacitaciones",
+      "archivosRequeridos": 2
+    },
+    {
+      "nombre": "Entrega de EPP",
+      "carpeta": "EPP",
+      "archivosRequeridos": 1
+    },
+    {
+      "nombre": "Contrato",
+      "carpeta": "Contratos",
+      "archivosRequeridos": 1
+    }
+  ],
+  "estados": {
+    "pendiente": "Pendiente",
+    "recibido": "Recibido",
+    "aprobado": "Aprobado",
+    "observado": "Observado"
+  },
+  "diasAvisoPlazo": 7,
+  "estadoAlEncontrar": "aprobado"
+}
